@@ -1,4 +1,4 @@
 .env
-Data/Pictures/
+Data/RawPictures/
 *__pycache__
 Inference/Models/

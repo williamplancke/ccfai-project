@@ -3,6 +3,7 @@ import time
 from Data.storage_management import delete_old_assets, get_data
 from Inference.cat_detection import check_cat_presence
 AMOUNT_OF_DATA_KEPT = 20
+CAT_CLASS = 15
 KEEP_NEW_DATA = True
 local_state = "off"
 local_interval = 5
@@ -31,12 +32,14 @@ def main(model):
     camera.start()
     while True:
         if local_state == "on":
-            filename = f"Data/Pictures/{time.time_ns()}.jpg"
+            filename = f"Data/RawPictures/{time.time_ns()}.jpg"
             camera.capture_file(filename)
+            # real_cat_path = "real-cat.jpg"
             prediction = check_cat_presence(model, filename)
-            print(f"Prediction: {prediction}")
-            if len(get_data("Pictures")) > AMOUNT_OF_DATA_KEPT:
-                delete_old_assets("Pictures", AMOUNT_OF_DATA_KEPT)
+            if CAT_CLASS in prediction.boxes.cls:
+                print("NOT IMP")
+            if len(get_data("RawPictures")) > AMOUNT_OF_DATA_KEPT:
+                delete_old_assets("RawPictures", AMOUNT_OF_DATA_KEPT)
         time.sleep(local_interval)
 if __name__ == "__main__":
     main()

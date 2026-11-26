@@ -1,0 +1,1 @@
+The model is quantized with YOLO to int8
