@@ -1,0 +1,4 @@
+.env
+Data/Pictures/
+*__pycache__
+Inference/Models/
