@@ -1,10 +1,12 @@
 import picamera2
-import time
+import time, shutil
+from pathlib import Path
 from Data.storage_management import delete_old_assets, get_data
 from Inference.cat_detection import check_cat_presence
 AMOUNT_OF_DATA_KEPT = 20
 CAT_CLASS = 15
 KEEP_NEW_DATA = True
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 local_state = "off"
 local_interval = 5
 def toggle_state(state: str) -> str:
@@ -34,10 +36,9 @@ def main(model):
         if local_state == "on":
             filename = f"Data/RawPictures/{time.time_ns()}.jpg"
             camera.capture_file(filename)
-            # real_cat_path = "real-cat.jpg"
             prediction = check_cat_presence(model, filename)
             if CAT_CLASS in prediction.boxes.cls:
-                print("NOT IMP")
+                shutil.copy(filename, PROJECT_ROOT / "Data" / "CatPictures")
             if len(get_data("RawPictures")) > AMOUNT_OF_DATA_KEPT:
                 delete_old_assets("RawPictures", AMOUNT_OF_DATA_KEPT)
         time.sleep(local_interval)
