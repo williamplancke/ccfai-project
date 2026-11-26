@@ -1,31 +1,213 @@
-from azure.iot.device import IoTHubDeviceClient
-import dotenv
+from azure.iot.device import IoTHubDeviceClient, MethodResponse
+from azure.storage.blob import BlobClient, ContentSettings
+from azure.core.exceptions import AzureError
 from pathlib import Path
-import os, time
-import asyncio
-async def handle_method_request(method_request):
-    if method_request.method_name == "get_catphoto_count":
+import dotenv
+import os
+import time
+import mimetypes
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CATPICTURES = PROJECT_ROOT / "Data" / "CatPictures"
+
+UPLOAD_INTERVAL = 5 * 60  # 5 minutes
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+
+
+def handle_method_request(method_request, iothub_client):
+    output_data = {"error": "Unknown method"}
+    status = 404
+
+    if method_request.name == "get_catphoto_count":
         output_data = get_catphoto_count()
-    return output_data
+        status = 200
+
+    response = MethodResponse.create_from_method_request(
+        method_request,
+        status,
+        output_data
+    )
+
+    iothub_client.send_method_response(response)
+
+
+def get_catphotos():
+    return list(CATPICTURES.iterdir())
+
 def get_catphoto_count():
-    return len(os.listdir(PROJECT_ROOT / "Data" / "CatPictures"))
-async def main(connection_string):
-    iothub_client = IoTHubDeviceClient.create_from_connection_string(connection_string)
+    return len(get_catphotos())
+
+def upload_catphotos(iothub_client):
+    pictures = get_catphotos()
+
+    if not pictures:
+        return
+
+    print(f"\nUploading {len(pictures)} pictures")
+
+    uploaded_count = 0
+
+    for path_to_file in pictures:
+        blob_name = path_to_file.name
+
+        # Request temporary access to Blob Storage
+        try:
+            blob_info = iothub_client.get_storage_info_for_blob(
+                blob_name
+            )
+
+        except Exception as ex:
+            print(f"Failed to obtain SAS for {blob_name}: "
+                  f"{type(ex).__name__}")
+            continue
+
+        success = False
+        status = 500
+        description = "Upload failed"
+
+        try:
+            sas_url = "https://{}/{}/{}{}".format(
+                blob_info["hostName"],
+                blob_info["containerName"],
+                blob_info["blobName"],
+                blob_info["sasToken"]
+            )
+
+            print(f"\nUploading file: {path_to_file}")
+
+            content_type = (
+                mimetypes.guess_type(blob_name)[0] # Tries to derive the content-type (needed to send a request) from the filename
+                or "application/octet-stream"
+            )
+
+            # Upload the image
+            with BlobClient.from_blob_url(sas_url) as blob_client:
+                with path_to_file.open("rb") as f:
+                    blob_client.upload_blob(
+                        f,
+                        overwrite=True,
+                        content_settings=ContentSettings(
+                            content_type=content_type
+                        )
+                    )
+
+            success = True
+            status = 200
+            description = "Upload successful"
+
+        except FileNotFoundError:
+            status = 404
+            description = "File not found"
+
+        except AzureError as ex:
+            status = getattr(ex, "status_code", None) or 500
+            description = "Azure Storage error"
+
+        except OSError:
+            status = 500
+            description = "Local file error"
+
+        finally:
+            # Notify IoT Hub regardless of upload outcome
+            try:
+                iothub_client.notify_blob_upload_status(
+                    blob_info["correlationId"],
+                    success,
+                    status,
+                    description
+                )
+
+            except Exception as ex:
+                success = False
+                print(f"Notification failed: "
+                      f"{type(ex).__name__}")
+
+        # Only delete the image if upload and notification succeeded
+        if success:
+            uploaded_count += 1
+
+            try:
+                path_to_file.unlink()
+                print(f"Successfully uploaded and removed {blob_name}")
+
+            except OSError:
+                print(f"Failed to remove local file: {blob_name}")
+
+        else:
+            print(f"Upload failed: {blob_name} ({description})")
+
+    print(f"\nSuccessfully uploaded "
+          f"{uploaded_count}/{len(pictures)} pictures")
+
+
+def initialise_properties(iothub_client):
+    initialisation_time = time.monotonic()
+
+    events = ["catphoto_transmission"]
+
+    iothub_client.on_method_request_received = (
+        lambda request: handle_method_request(
+            request,
+            iothub_client
+        )
+    )
+
+    # Track when each periodic event last occurred
+    recent_events = {}
+
+    for event in events:
+        recent_events[event] = initialisation_time
+
+    return iothub_client, recent_events
+
+
+def main(connection_string):
+    iothub_client = IoTHubDeviceClient.create_from_connection_string(
+        connection_string
+    )
+
     try:
         iothub_client.connect()
-        iothub_client.on_method_request_received = handle_method_request
-        while True:
-            time.sleep(3)
-    except KeyboardInterrupt:
-        iothub_client.disconnect()
-        raise
 
-    return
+        print("Connected to Azure IoT Hub")
+
+        iothub_client, recent_events = initialise_properties(
+            iothub_client
+        )
+
+        while True:
+            if (
+                time.monotonic()
+                - recent_events["catphoto_transmission"]
+                >= UPLOAD_INTERVAL
+            ):
+                upload_catphotos(iothub_client)
+
+                recent_events["catphoto_transmission"] = (
+                    time.monotonic()
+                )
+
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        print("\nShutting down IoT device")
+
+    finally:
+        iothub_client.shutdown()
+        print("Disconnected from Azure IoT Hub")
+
 
 if __name__ == "__main__":
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent
-    found_env_file = dotenv.load_dotenv(PROJECT_ROOT / ".env")
-    assert found_env_file
-    asyncio.run(main(
-        connection_string=os.environ.get("IOTDEVICE_CONNECTION_STRING")
-    ))
+    dotenv.load_dotenv(PROJECT_ROOT / ".env")
+
+    connection_string = os.environ.get(
+        "IOTDEVICE_CONNECTION_STRING"
+    )
+
+    if not connection_string:
+        raise RuntimeError("Missing IoT Hub connection string")
+
+    CATPICTURES.mkdir(parents=True, exist_ok=True)
+
+    main(connection_string)
