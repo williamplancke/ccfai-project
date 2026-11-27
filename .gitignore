@@ -1,3 +1,4 @@
+*.vscode
 .env
 Data/RawPictures/
 *__pycache__

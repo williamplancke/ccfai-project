@@ -11,7 +11,7 @@ import mimetypes
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CATPICTURES = PROJECT_ROOT / "Data" / "CatPictures"
 
-UPLOAD_INTERVAL = 5 * 60  # 5 minutes
+
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 
@@ -22,7 +22,6 @@ def handle_method_request(method_request, iothub_client):
     if method_request.name == "get_catphoto_count":
         output_data = get_catphoto_count()
         status = 200
-
     response = MethodResponse.create_from_method_request(
         method_request,
         status,
@@ -31,7 +30,10 @@ def handle_method_request(method_request, iothub_client):
 
     iothub_client.send_method_response(response)
 
-
+def fetch_desired_properties(iothub_client):
+    return iothub_client.get_twin()["desired"]
+def fetch_reported_properties(iothub_client):
+    return iothub_client.get_twin()["reported"]
 def get_catphotos():
     return list(CATPICTURES.iterdir())
 
@@ -155,7 +157,7 @@ def initialise_properties(iothub_client):
 
     # Track when each periodic event last occurred
     recent_events = {}
-
+    settings = {}
     for event in events:
         recent_events[event] = initialisation_time
 
@@ -163,24 +165,22 @@ def initialise_properties(iothub_client):
 
 
 def main(connection_string):
+    upload_interval = 5 * 60  # 5 minutes
     iothub_client = IoTHubDeviceClient.create_from_connection_string(
         connection_string
     )
-
     try:
         iothub_client.connect()
-
         print("Connected to Azure IoT Hub")
 
         iothub_client, recent_events = initialise_properties(
             iothub_client
-        )
-
+        ) 
         while True:
             if (
                 time.monotonic()
                 - recent_events["catphoto_transmission"]
-                >= UPLOAD_INTERVAL
+                >= upload_interval
             ):
                 upload_catphotos(iothub_client)
 
