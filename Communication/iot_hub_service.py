@@ -11,7 +11,7 @@ import mimetypes
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CATPICTURES = PROJECT_ROOT / "Data" / "CatPictures"
 
-
+RELEVANT_PROPERTIES = ["upload_interval", "config_update_interval"]
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 
@@ -34,6 +34,19 @@ def fetch_desired_properties(iothub_client):
     return iothub_client.get_twin()["desired"]
 def fetch_reported_properties(iothub_client):
     return iothub_client.get_twin()["reported"]
+def update_config(iothub_client, prev_config):
+    config = prev_config
+    desired = fetch_desired_properties(iothub_client)
+    reported = fetch_reported_properties(iothub_client)
+    for sublist in [RELEVANT_PROPERTIES, prev_config.keys()]: # To make sure properties that aren't in the twin config, but are in the local config                                                            # don't get lost.
+        for setting in sublist:
+            if desired.get(setting, prev_config.get(setting, None)) != reported.get(setting, prev_config.get(setting, None)):
+                config[setting] = desired[setting]
+    return config
+def publish_config(iothub_client, config):
+    iothub_client.patch_twin_reported_properties(config)
+    print("Published config")
+    return
 def get_catphotos():
     return list(CATPICTURES.iterdir())
 
@@ -143,10 +156,11 @@ def upload_catphotos(iothub_client):
           f"{uploaded_count}/{len(pictures)} pictures")
 
 
-def initialise_properties(iothub_client):
+def initialise_config(iothub_client):
+
     initialisation_time = time.monotonic()
 
-    events = ["catphoto_transmission"]
+    events = ["catphoto_transmission", "config_update"]
 
     iothub_client.on_method_request_received = (
         lambda request: handle_method_request(
@@ -157,15 +171,18 @@ def initialise_properties(iothub_client):
 
     # Track when each periodic event last occurred
     recent_events = {}
-    settings = {}
+    config = {
+        "upload_interval": 5 ,# * 60,
+        "config_update_interval": 5 ,# * 60
+    }
     for event in events:
         recent_events[event] = initialisation_time
 
-    return iothub_client, recent_events
+    return iothub_client, recent_events, config
 
 
 def main(connection_string):
-    upload_interval = 5 * 60  # 5 minutes
+    
     iothub_client = IoTHubDeviceClient.create_from_connection_string(
         connection_string
     )
@@ -173,21 +190,32 @@ def main(connection_string):
         iothub_client.connect()
         print("Connected to Azure IoT Hub")
 
-        iothub_client, recent_events = initialise_properties(
+        iothub_client, recent_events, config = initialise_config(
             iothub_client
-        ) 
+        )
         while True:
             if (
                 time.monotonic()
                 - recent_events["catphoto_transmission"]
-                >= upload_interval
+                >= config["upload_interval"]
             ):
                 upload_catphotos(iothub_client)
 
                 recent_events["catphoto_transmission"] = (
                     time.monotonic()
                 )
-
+            if (
+                time.monotonic()
+                - recent_events["config_update"]
+                >= config["config_update_interval"]
+            ):
+                print("Config before update:",config)
+                config = update_config(iothub_client, config)
+                print("Config after update:",config)
+                publish_config(iothub_client, config)
+                recent_events["config_update"] = (
+                    time.monotonic()
+                )
             time.sleep(1)
 
     except KeyboardInterrupt:
